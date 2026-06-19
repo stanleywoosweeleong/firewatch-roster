@@ -1,0 +1,42 @@
+name: FireWatch Alerter
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # every 30 min; FIRMS updates a few times daily
+  workflow_dispatch:
+
+# allow the job to commit seen.json back to the repo
+permissions:
+  contents: write
+
+jobs:
+  check-fires:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pull the latest roster written by the bot (if it lives in another repo,
+      # replace this step with a curl from raw.githubusercontent.com).
+      - name: Show roster
+        run: test -f farmers.json && echo "roster found" || echo "no roster yet"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run fire check
+        env:
+          NASA_MAP_KEY: ${{ secrets.NASA_MAP_KEY }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          WA_TOKEN:     ${{ secrets.WA_TOKEN }}
+          WA_PHONE_ID:  ${{ secrets.WA_PHONE_ID }}
+          MIN_LEVEL:    "MEDIUM"
+        run: python alerter.py
+
+      - name: Save alert de-dup state
+        run: |
+          git config user.name  "firewatch-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add seen.json || true
+          git commit -m "update seen state" || echo "nothing to commit"
+          git push || echo "nothing to push"
