@@ -46,20 +46,50 @@ def haversine(la1, lo1, la2, lo2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
 
-def bearing(la1, lo1, la2, lo2):
+def bearing_deg(la1, lo1, la2, lo2):
     p = math.pi / 180
     y = math.sin((lo2-lo1)*p) * math.cos(la2*p)
     x = (math.cos(la1*p)*math.sin(la2*p)
          - math.sin(la1*p)*math.cos(la2*p)*math.cos((lo2-lo1)*p))
-    b = (math.degrees(math.atan2(y, x)) + 360) % 360
-    return DIRS[round(b/45) % 8]
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 
-def risk(d):
-    if d < 2:  return "CRITICAL"
-    if d < 5:  return "HIGH"
-    if d < 10: return "MEDIUM"
-    return "LOW"
+def bearing(la1, lo1, la2, lo2):
+    return DIRS[round(bearing_deg(la1, lo1, la2, lo2)/45) % 8]
+
+
+def wind_toward(br_deg, wind_from):
+    if wind_from is None:
+        return False
+    diff = abs(((br_deg - wind_from + 540) % 360) - 180)
+    return diff <= 50
+
+
+def risk(d, frp=None, toward=False):
+    lvl = 3 if d < 2 else 2 if d < 5 else 1 if d < 10 else 0
+    if frp is not None:
+        if frp >= 100:
+            lvl += 1
+        elif frp >= 50 and lvl < 3:
+            lvl += 1
+    if toward:
+        lvl += 1
+    lvl = min(lvl, 3)
+    return ["LOW", "MEDIUM", "HIGH", "CRITICAL"][lvl]
+
+
+def fetch_wind(farm):
+    url = ("https://api.open-meteo.com/v1/forecast"
+           f"?latitude={farm['lat']}&longitude={farm['lon']}"
+           "&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&windspeed_unit=kmh")
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        c = data.get("current", {})
+        return {"spd": c.get("wind_speed_10m"), "dir": c.get("wind_direction_10m"),
+                "gust": c.get("wind_gusts_10m")}
+    except Exception:
+        return None
 
 
 def fetch_hotspots(farm):
@@ -71,7 +101,9 @@ def fetch_hotspots(farm):
     with urllib.request.urlopen(url, timeout=60) as r:
         text = r.read().decode("utf-8", "replace")
     if "Invalid" in text or text.strip() == "":
-        return []
+        return [], None
+    wind = fetch_wind(farm)
+    wdir = wind["dir"] if wind else None
     rows = list(csv.DictReader(io.StringIO(text)))
     hits = []
     for row in rows:
@@ -81,13 +113,20 @@ def fetch_hotspots(farm):
             continue
         d = haversine(farm["lat"], farm["lon"], la, lo)
         if d <= farm["rad"]:
+            br_deg = bearing_deg(farm["lat"], farm["lon"], la, lo)
+            try:
+                frp = float(row.get("frp", ""))
+            except (ValueError, TypeError):
+                frp = None
+            toward = wind_toward(br_deg, wdir)
             hits.append({
-                "d": d, "br": bearing(farm["lat"], farm["lon"], la, lo),
-                "rk": risk(d),
+                "d": d, "br": DIRS[round(br_deg/45) % 8],
+                "frp": frp, "toward": toward,
+                "rk": risk(d, frp, toward),
                 "date": row.get("acq_date", ""), "time": row.get("acq_time", ""),
             })
     hits.sort(key=lambda h: h["d"])
-    return hits
+    return hits, wind
 
 
 def send_telegram(chat_id, text):
@@ -129,15 +168,31 @@ def load_roster():
         return []
 
 
-def alert_text(farm, hits, worst):
+def alert_text(farm, hits, worst, wind):
     n = hits[0]
-    return (f"🔥 火警通报 FIRE ALERT · {farm['name']}\n\n"
-            f"NASA 检测到 {len(hits)} 个火点 / {len(hits)} hotspot(s)\n"
-            f"最近 Nearest: {n['d']:.1f} km ({n['br']})\n"
-            f"风险 Level: {worst}\n"
-            f"时间 Time: {n['date']} {str(n['time']).zfill(4)} UTC\n\n"
-            f"来源 Source: NASA VIIRS\n"
-            f"请尽快巡查 / Inspect the perimeter ASAP.")
+    lines = [f"🔥 火警通报 FIRE ALERT · {farm['name']}",
+             "",
+             f"NASA 检测到 {len(hits)} 个火点 / {len(hits)} hotspot(s)",
+             f"最近 Nearest: {n['d']:.1f} km ({n['br']})"]
+    if n.get("frp") is not None:
+        if n["frp"] >= 100:
+            word = "猛烈 intense"
+        elif n["frp"] >= 50:
+            word = "较强 strong"
+        else:
+            word = "小火 small"
+        lines.append(f"强度 Intensity: {word} ({round(n['frp'])}MW)")
+    if wind and wind.get("dir") is not None:
+        gust = f", gust {round(wind['gust'])}" if wind.get("gust") is not None else ""
+        lines.append(f"风 Wind: {round(wind['spd'])} km/h from {DIRS[round(wind['dir']/45)%8]}{gust}")
+    if any(h.get("toward") for h in hits):
+        lines.append("⚠️ 有火势正吹向农场 / Fire(s) blowing toward the farm")
+    lines += [f"风险 Level: {worst}",
+              f"时间 Time: {n['date']} {str(n['time']).zfill(4)} UTC",
+              "",
+              "来源 Source: NASA VIIRS",
+              "请尽快巡查 / Inspect the perimeter ASAP."]
+    return "\n".join(lines)
 
 
 def main():
@@ -155,7 +210,7 @@ def main():
         name = person.get("name", phone)
         for farm in person.get("farms", []):
             try:
-                hits = fetch_hotspots(farm)
+                hits, wind = fetch_hotspots(farm)
             except Exception as e:
                 print(f"{name}/{farm.get('name')}: fetch error {e}")
                 continue
@@ -164,7 +219,7 @@ def main():
             if not hits or worst is None or LEVELS[worst] < threshold:
                 print(f"{name}/{farm['name']}: {len(hits)} hotspot(s), below level")
                 continue
-            msg = alert_text(farm, hits, worst)
+            msg = alert_text(farm, hits, worst, wind)
             print(f"{name}/{farm['name']}: ALERT {worst}")
             send_telegram(chat_id, msg)
             send_whatsapp(phone, msg)
