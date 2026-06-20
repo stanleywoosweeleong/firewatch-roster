@@ -24,7 +24,7 @@ roster.json format (written by bot-worker.js):
   ROSTER_PATH    path to roster.json in the repo (default roster.json)
 """
 
-import os, math, csv, io, json, urllib.request, urllib.parse, urllib.error
+import os, math, csv, io, json, time, urllib.request, urllib.parse, urllib.error
 
 NASA_KEY = os.environ.get("NASA_MAP_KEY", "")
 TG_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
@@ -154,11 +154,30 @@ def send_telegram(chat_id, text):
         return
     data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    try:
-        urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30)
-        print(f"  Telegram -> {chat_id} sent")
-    except urllib.error.URLError as e:
-        print(f"  Telegram -> {chat_id} failed: {e}")
+    for attempt in range(3):
+        try:
+            urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=30)
+            print(f"  Telegram -> {chat_id} sent")
+            # gentle pacing: stay well under Telegram's ~30 msg/sec limit
+            time.sleep(0.2)
+            return
+        except urllib.error.HTTPError as e:
+            # 429 = Telegram asking us to slow down. Respect retry_after and retry once.
+            if e.code == 429:
+                wait = 2
+                try:
+                    body = json.loads(e.read().decode("utf-8", "replace"))
+                    wait = int(body.get("parameters", {}).get("retry_after", 2))
+                except Exception:
+                    pass
+                print(f"  Telegram -> {chat_id} rate-limited, waiting {wait}s")
+                time.sleep(wait + 1)
+                continue
+            print(f"  Telegram -> {chat_id} failed: {e}")
+            return
+        except urllib.error.URLError as e:
+            print(f"  Telegram -> {chat_id} failed: {e}")
+            return
 
 
 def send_whatsapp(phone, text):
