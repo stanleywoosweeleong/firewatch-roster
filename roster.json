@@ -3,15 +3,15 @@
     "phone": "60193824740",
     "chat_id": 7570409676,
     "tg_name": "Stanley Woo",
-    "ts": "2026-06-19T22:28:44.525Z",
+    "ts": "2026-06-20T13:04:18.729Z",
     "name": "Stanley Woo",
     "lang": "zh",
     "farms": [
       {
-        "name": "Kemanyan",
-        "lat": 3.14204,
-        "lon": 102.37194,
-        "rad": 30
+        "name": "文积",
+        "lat": 3.20721,
+        "lon": 102.14491,
+        "rad": 9
       }
     ]
   }
