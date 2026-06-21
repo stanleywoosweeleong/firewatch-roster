@@ -3,9 +3,17 @@
     "phone": "60193824740",
     "chat_id": 7570409676,
     "tg_name": "Stanley Woo",
-    "ts": "2026-06-20T22:40:16.760Z",
+    "ts": "2026-06-21T00:44:01.817Z",
     "name": "Stanley Woo",
     "lang": "zh",
-    "farms": []
+    "farms": [
+      {
+        "id": "fmqn2d24pcc0j",
+        "name": "文积",
+        "lat": 3.20716,
+        "lon": 102.14511,
+        "rad": 10
+      }
+    ]
   }
 ]
